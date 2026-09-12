@@ -73,6 +73,8 @@ npm install koishi-plugin-yesimbot-livingdiary
 | `personaPresetId` | string | `""` | **人格预设 ID**：`data/yesimbot/memory/core/` 下核心记忆块的文件名（不带 `.md`）或标题。**见下方专门说明** |
 | `diaryGenerateRetries` | number | `7` | 日记生成失败最大重试次数 |
 | `diaryGenerateRetryDelayMs` | number | `5000` | 生成重试间隔（毫秒） |
+| `diaryManualEnabled` | boolean | `false` | 是否启用手动触发日记：输入关键词即立即执行日记流程（不受定时时刻限制） |
+| `diaryManualKeyword` | string | `""` | 手动触发日记的关键词，消息内容完全匹配时触发一次 |
 
 ### P3 QQ 空间自动互动
 
@@ -171,6 +173,18 @@ YesImBot 的模型会在会话中自动看到并调用此工具，例如模型�
 4. 自动发布到 QQ 空间。
 
 规则：当天无记忆则跳过；生成失败重试最多 7 次、间隔 5 秒；发布结果不确定时**绝不自动重发**，只通知 `alertTargets` 人工核对；停机/重载错过触发时刻不补发。
+
+---
+
+## 手动触发日记（关键词开关）
+
+想在任何时间直接跑一次“当日日记”：在配置里开启开关并设置关键词，然后在会话中发送该关键词即可。
+
+1. `diaryManualEnabled` = `true`
+2. `diaryManualKeyword` = `"今天日记"`（自定义，任意字符串）
+3. 在会话中输入 `今天日记`（需在 `allowUserIds` 白名单内）
+
+效果：立即执行一次日记流程（采集当天记忆 → `mainModel` 生成 → 发布到空间），并把执行结果（成功 / 当天无记忆跳过 / 生成失败 / 需人工核对）回复给你。不依赖 `diaryTime` 定时时刻。
 
 ---
 
