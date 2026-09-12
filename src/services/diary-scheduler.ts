@@ -13,6 +13,14 @@ import { QzoneClientManager, describeOutcome } from './qzone-manager'
 
 /**
  * DiaryScheduler —— P2 每日记忆动态
+ *
+ * 设计要点：
+ * 1. 使用 setTimeout 递归调度（而非 setInterval），避免任务堆积；
+ * 2. 每天配置时刻（默认 23:00）从 WorldStateService 采集当天记忆，
+ *    结合 personaPresetId 指定的人格，用 mainModel 生成第一人称日记体动态并发布；
+ * 3. 生成失败最多重试 7 次、间隔 5 秒；
+ * 4. 发布遵循确定性结果语义：结果不确定时绝不自动重发，只提示人工核对；
+ * 5. 当日无记忆则跳过；停机或重载错过触发时刻不补发。
  */
 export class DiaryScheduler {
   private timer: NodeJS.Timeout | null = null
@@ -56,28 +64,48 @@ export class DiaryScheduler {
     } catch (error) {
       this.logger.error(`每日日记执行异常：${(error as Error).message}`)
     } finally {
+      // 无论成功失败都在下一日相应时刻继续（不补发当日）
       if (!this.disposed) this.schedule()
     }
   }
 
-  private async executeDaily(): Promise<void> {
+  /**
+   * 手动触发一次日记流程（关键词触发使用）。
+   * 与定时任务执行同一逻辑，不受 diaryTime 时间限制。
+   */
+  async runNow(): Promise<string> {
+    this.debug('手动触发日记流程')
+    return this.executeDaily()
+  }
+
+  private async executeDaily(): Promise<string> {
     const date = new Date()
     const collection = await this.collector.collect(date)
-    if (!collection) return
+    if (!collection) {
+      this.debug('当日无记忆，跳过日记发布')
+      return '当天还没有可用的记忆素材，已跳过日记生成'
+    }
+
     const persona = this.resolvePersona()
     const diaryText = await this.generate(collection, persona)
-    if (!diaryText) return
+    if (!diaryText) {
+      this.logger.error('日记生成失败且重试已耗尽，放弃本次发布')
+      return '日记生成失败（已按配置重试多次），本次放弃发布'
+    }
+
     const result = await this.qzone.publish(diaryText)
     const message = describeOutcome('日记发布', result.outcome)
     if (result.outcome === 'unknown') {
-      this.notify(`需人工核对：
-${message}
+      // 确定性语义：结果不确定绝不自动重发
+      this.notify(`${message}
 时间：${date.toLocaleString()}`)
-    } else if (result.outcome === 'verified' || result.outcome === 'accepted') {
-      this.notify(`[日记] ${message}`)
-    } else {
-      this.logger.warn(message)
+      return '日记已发出但结果无法确认，请到 QQ 空间人工核对（已通过安全渠道提醒）'
     }
+    if (result.outcome === 'verified' || result.outcome === 'accepted') {
+      this.notify(`[日记] ${message}`)
+      return `日记发布成功：${message}`
+    }
+    return `日记流程完成：${message}`
   }
 
   /** 调用 mainModel 生成日记正文；失败按配置重试（默认最多 7 次，间隔 5 秒） */
@@ -87,9 +115,12 @@ ${message}
       this.logger.error('主模型不可用，无法生成日记（请检查 mainModel 配置）')
       return null
     }
+
     const prompt = this.buildDiaryPrompt(collection, persona)
+    // 完整提示词仅在开启 debug 时输出
     this.debug(`[日记生成提示词]
 ${prompt}`)
+
     for (let attempt = 1; attempt <= this.config.diaryGenerateRetries; attempt++) {
       try {
         const res = await model.chat({
@@ -122,14 +153,14 @@ ${text}`)
         (b: { label: string; title: string }) => b.label === id || b.title === id,
       )
       if (block?.content) return block.content.trim()
-      this.logger.warn(`人格预设 ${id} 未找到，将按默认人格生成`)
+      this.logger.warn(`人格预设 ${id} 未在核心记忆目录中找到，将按默认人格生成`)
     } catch {
       this.logger.warn('读取核心记忆块失败，将按默认人格生成')
     }
     return ''
   }
 
-  /** 通过 YesImBot ModelService 解析模型组 */
+  /** 通过 YesImBot ModelService 解析模型组（支持任务键，如 chat / summarize / memory） */
   private resolveModel(group: string): ChatModelSwitcher | null {
     try {
       const service: ModelService | undefined = this.ctx[Services.Model]
@@ -146,8 +177,8 @@ ${text}`)
       '你是长期写“生活日记”的人。请把下面的“当天记忆素材”改写成一篇第一人称日记动态，准备发布到 QQ 空间。',
       '要求：',
       '1. 全程使用“我”的第一人称；',
-      '2. 内容严格基于素材，不得无中生有；',
-      '3. 语气自然、真诚，带一点生活感；',
+      '2. 内容严格基于素材，不得无中生有；素材中的对话可转述为你的所见所闻；',
+      '3. 语气自然、真诚，带一点生活感，像真人随手写下的心情记录；',
       '4. 篇幅控制在 100~200 字；',
       '5. 只输出日记正文本身，不要任何解释、标题或 markdown 标记。',
       '',
@@ -165,6 +196,7 @@ ${text}`)
     if (this.config.debug) (this.logger.debug as any).apply(this.logger, args)
   }
 
+  /** 插件卸载时清理定时器 */
   dispose(): void {
     this.disposed = true
     if (this.timer) clearTimeout(this.timer)
