@@ -13,20 +13,12 @@ import { mapLimit, formatTime, truncate } from './utils'
 
 /**
  * YesImBot 扩展：QQ 空间生活日记
- *
- * 通过 @Extension 注册为 YesImBot 的扩展，提供：
- * - P0：qzone.feeds / qzone.publish / qzone.status 三条指令；
- * - P1：qzone_publish 模型工具（白名单外会话不可见）；
- * - P2：每日记忆动态（DiaryScheduler）；
- * - P3：空间自动互动（InteractionService）。
- *
- * 登录态只存内存（CookieManager），不写磁盘。
  */
 
 /**
  * 模块级实例引用。
  * 说明：@Tool 装饰器只把 execute 方法 bind 到实例，isSupported 由框架直接以
- * `tool.isSupported(session)` 调用而不会绑定 this，因此权限判定通过该引用完成。
+ * tool.isSupported(session) 调用而不会绑定 this，因此权限判定通过该引用完成。
  */
 let activeInstance: YesImBotLivingDiary | null = null
 
@@ -34,7 +26,7 @@ let activeInstance: YesImBotLivingDiary | null = null
   name: 'yesimbot-livingdiary',
   display: '生活日记',
   description: '为 YesImBot 提供 QQ 空间生活日记能力：自动记录并发布日记、读写动态、自动互动。',
-  version: '1.0.0',
+  version: '1.0.1',
   author: 'LivingDiary',
 })
 export default class YesImBotLivingDiary {
@@ -61,7 +53,6 @@ export default class YesImBotLivingDiary {
     this.diary = new DiaryScheduler(ctx, config, this.qzone, this.collector, this.logger, this.notify.bind(this))
     this.interaction = new InteractionService(ctx, config, this.qzone, this.logger, this.notify.bind(this))
 
-    // 就绪后启动定时任务；卸载时统一清理定时器与客户端
     ctx.on('ready', () => {
       this.diary.start()
       this.interaction.start()
@@ -74,13 +65,34 @@ export default class YesImBotLivingDiary {
     })
 
     this.registerCommands()
+    this.registerManualTrigger()
+  }
+
+  // ==================== 手动触发日记（关键词） ====================
+
+  /**
+   * 手动触发日记：白名单用户在会话中输入与配置完全匹配的关键词，
+   * 即立即执行一次每日日记流程（采集当天记忆 → 生成 → 发布），不受定时时刻限制。
+   */
+  private registerManualTrigger(): void {
+    const keyword = this.config.diaryManualKeyword?.trim() || ''
+    if (!this.config.diaryManualEnabled || !keyword) return
+    this.ctx.middleware(async (session, next) => {
+      // 白名单外用户不响应关键词
+      if (!this.isAllowed(session)) return next()
+      const text = (session.content ?? '').trim()
+      if (text !== keyword) return next()
+      this.logger.debug(`命中手动触发日记关键词：${keyword}`)
+      await session.send('正在为你生成今日日记…')
+      const result = await this.diary.runNow()
+      return session.send(result)
+    })
   }
 
   // ==================== P1 模型工具 ====================
 
   /**
    * qzone_publish：把文字（可附图）发布到机器人自己的 QQ 空间。
-   * 工具描述写清楚“把这张图发到空间，配文 xxx”这类意图。
    * 白名单外会话通过 isSupported 隐藏该工具。
    */
   @Tool<{ content: string; images?: string[] }>({
@@ -94,7 +106,6 @@ export default class YesImBotLivingDiary {
         .description('要附带的图片地址列表，最多 9 张，支持 http(s) 链接、data: 或本地文件路径'),
     }),
     isSupported: (session?: Session) => {
-      // 白名单外会话工具不可见；session 未附加或实例未就绪时同样隐藏
       if (!session) return false
       return activeInstance?.isAllowed(session) ?? false
     },
@@ -121,7 +132,6 @@ export default class YesImBotLivingDiary {
       return Failed({
         name: 'QzoneRequestError',
         message: (error as Error).message,
-        // 写操作走确定性语义：是否已发出无法判断，一律标记为不可重试
         retryable: false,
       })
     }
@@ -141,7 +151,6 @@ export default class YesImBotLivingDiary {
           try {
             const ownId = this.qzone.sessionAccountId()
             const target = options?.target
-            // 目标与自己的账号不一致时读取对方公开动态，否则读自己的动态
             const page =
               target && target !== ownId
                 ? await this.qzone.listFeeds({ scope: 'profile', userId: target, limit })
@@ -198,7 +207,6 @@ export default class YesImBotLivingDiary {
   private isAllowed(session?: Session | null): boolean {
     if (!session?.userId) return false
     if (this.config.allowUserIds.includes(session.userId)) return true
-    // user 可能未附加（Observed 类型），取 authority 失败时按 0 处理
     if (!this.config.allowUserIds.length) return ((session.user as { authority?: number } | undefined)?.authority ?? 0) >= 3
     return false
   }
