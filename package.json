@@ -1,7 +1,12 @@
 {
   "name": "koishi-plugin-yesimbot-livingdiary",
-  "version": "1.0.0",
+  "version": "1.0.2",
   "description": "YesImBot 扩展：QQ 空间生活日记（自动记录并发布日记、读写空间动态、自动互动）",
+  "homepage": "https://github.com/Leersxie/koishi-plugin-yesimbot-livingdiary",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Leersxie/koishi-plugin-yesimbot-livingdiary.git"
+  },
   "keywords": [
     "koishi",
     "koishi-plugin",
@@ -40,7 +45,7 @@
   "scripts": {
     "build": "tsc",
     "watch": "tsc -w --preserveWatchOutput",
-    "clean": "node -e \"fs.rmSync('lib',{recursive:true,force:true})\""
+    "clean": "node -e "fs.rmSync('lib',{recursive:true,force:true})""
   },
   "license": "MIT",
   "peerDependencies": {
